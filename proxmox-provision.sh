@@ -16,12 +16,12 @@ CONF_FILE="${SCRIPT_DIR}/cacti-deploy.conf"
 # --- CARREGAR CONFIGURAÇÃO ---------------------------------------------------
 [[ -f "$CONF_FILE" ]] || {
   echo "[ERRO] Ficheiro de configuração não encontrado: $CONF_FILE"
-  echo "       Cria o ficheiro cacti-deploy.conf no mesmo diretório do script."
+  echo "       Copia cacti-deploy.conf.example para cacti-deploy.conf e edita."
   exit 1
 }
 source "$CONF_FILE"
 
-# Valores padrão para variáveis opcionais
+# Valores padrão
 VMID="${VMID:-200}"
 VM_NAME="${VM_NAME:-cacti-monitoring}"
 VM_MEMORY="${VM_MEMORY:-4096}"
@@ -38,9 +38,12 @@ CLOUD_IMAGE_URL="${CLOUD_IMAGE_URL:-https://cloud.debian.org/images/cloud/bookwo
 CLOUD_IMAGE_FILE="/var/lib/vz/template/qemu/debian-12-genericcloud-amd64.qcow2"
 CLOUD_USER="${CLOUD_USER:-root}"
 CLOUD_PASS="${CLOUD_PASS:-$(openssl rand -base64 12)}"
+CACTI_DB_NAME="${CACTI_DB_NAME:-cacti}"
+CACTI_DB_USER="${CACTI_DB_USER:-cactiuser}"
 CACTI_DB_PASS="${CACTI_DB_PASS:-$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c20)}"
 CACTI_ADMIN_PASS="${CACTI_ADMIN_PASS:-admin}"
 CACTI_SCRIPT_DIR="/opt/cacti-deploy"
+LVM_VG=""  # detectado automaticamente
 
 # Cores
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -66,14 +69,50 @@ check_vmid() {
   success "VMID ${VMID} disponível"
 }
 
+# --- DETECTAR LVM VG ---------------------------------------------------------
+detect_lvm_group() {
+  step "Detectando configuração de storage"
+
+  # Tentar obter o VG real do storage configurado no Proxmox
+  local STORAGE_CFG="/etc/pve/storage.cfg"
+  local DETECTED_VG=""
+
+  if [[ -f "$STORAGE_CFG" ]]; then
+    # Procurar o VG associado ao storage configurado (local-lvm ou outro)
+    DETECTED_VG=$(awk -v storage="${VM_STORAGE}" '
+      /^lvmthin:/ { current=$2 }
+      current == storage && /^\s+vgname/ { print $2 }
+    ' "$STORAGE_CFG" | head -1)
+  fi
+
+  # Fallback: detectar VG que contém discos de VM
+  if [[ -z "$DETECTED_VG" ]]; then
+    DETECTED_VG=$(lvs --noheadings -o vg_name,lv_name 2>/dev/null \
+      | awk '{print $1}' | sort | uniq -c | sort -rn | awk '{print $2; exit}')
+  fi
+
+  # Fallback final
+  LVM_VG="${DETECTED_VG:-pve}"
+
+  info "Storage configurado: ${VM_STORAGE}"
+  info "LVM Volume Group: ${LVM_VG}"
+
+  # Verificar se o path existe
+  if [[ ! -d "/dev/${LVM_VG}" ]]; then
+    warn "Diretório /dev/${LVM_VG} não encontrado. Usando 'pve' como fallback."
+    LVM_VG="pve"
+  fi
+
+  success "LVM VG: /dev/${LVM_VG}"
+}
+
 validate_config() {
   step "Validando configuração"
 
-  # Alertar senhas padrão
   local WARN_PASS=0
-  [[ "$CLOUD_PASS"       == "alterar-esta-senha" ]] && { warn "CLOUD_PASS não foi alterada no cacti-deploy.conf!"; WARN_PASS=1; }
-  [[ "$CACTI_DB_PASS"    == "alterar-esta-senha" ]] && { warn "CACTI_DB_PASS não foi alterada no cacti-deploy.conf!"; WARN_PASS=1; }
-  [[ "$CACTI_ADMIN_PASS" == "alterar-esta-senha" ]] && { warn "CACTI_ADMIN_PASS não foi alterada no cacti-deploy.conf!"; WARN_PASS=1; }
+  [[ "$CLOUD_PASS"       == "alterar-esta-senha" ]] && { warn "CLOUD_PASS não foi alterada!"; WARN_PASS=1; }
+  [[ "$CACTI_DB_PASS"    == "alterar-esta-senha" ]] && { warn "CACTI_DB_PASS não foi alterada!"; WARN_PASS=1; }
+  [[ "$CACTI_ADMIN_PASS" == "alterar-esta-senha" ]] && { warn "CACTI_ADMIN_PASS não foi alterada!"; WARN_PASS=1; }
 
   if [[ $WARN_PASS -eq 1 ]]; then
     echo ""
@@ -148,7 +187,7 @@ create_vm() {
     success "Chave SSH configurada"
   fi
 
-  # Cloud-init user-data para instalar Cacti automaticamente
+  # Cloud-init user-data
   local USERDATA_FILE="/var/lib/vz/snippets/cacti-${VMID}-userdata.yaml"
   mkdir -p /var/lib/vz/snippets
 
@@ -158,11 +197,32 @@ hostname: ${VM_NAME}
 manage_etc_hosts: true
 package_update: true
 package_upgrade: true
+
+# Habilitar login root com password
+chpasswd:
+  expire: false
+
+ssh_pwauth: true
+
+# Permitir root login via SSH e consola
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-cacti.conf
+    content: |
+      PermitRootLogin yes
+      PasswordAuthentication yes
+
+bootcmd:
+  - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+  - sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+  - passwd -u root || true
+
 packages:
   - git
   - curl
   - wget
+
 runcmd:
+  - systemctl restart ssh || systemctl restart sshd
   - mkdir -p ${CACTI_SCRIPT_DIR}
   - git clone https://github.com/rcsmota/cacti-proxymox-deploy.git ${CACTI_SCRIPT_DIR}
   - cp ${CACTI_SCRIPT_DIR}/cacti-deploy.conf.example ${CACTI_SCRIPT_DIR}/cacti-deploy.conf
@@ -171,12 +231,44 @@ runcmd:
     export CACTI_DB_PASS="${CACTI_DB_PASS}"
     export CACTI_ADMIN_PASS="${CACTI_ADMIN_PASS}"
     bash ${CACTI_SCRIPT_DIR}/cacti-install.sh 2>&1 | tee /var/log/cacti-install.log
+
 final_message: "Cacti instalado!"
 YAML
 
   qm set "${VMID}" --cicustom "user=local:snippets/cacti-${VMID}-userdata.yaml"
-
   success "VM ${VMID} criada"
+}
+
+# --- CORRIGIR ROOT LOGIN VIA VIRT-CUSTOMIZE ----------------------------------
+# Chamado ANTES de iniciar a VM, como garantia extra
+fix_root_login() {
+  step "Configurando acesso root na VM"
+
+  local DISK_PATH="/dev/${LVM_VG}/vm-${VMID}-disk-1"
+
+  if [[ ! -b "$DISK_PATH" ]]; then
+    # Tentar encontrar o disco
+    DISK_PATH=$(find /dev -name "vm-${VMID}-disk-1" 2>/dev/null | head -1)
+  fi
+
+  if [[ -z "$DISK_PATH" || ! -b "$DISK_PATH" ]]; then
+    warn "Disco não encontrado em /dev/${LVM_VG}/vm-${VMID}-disk-1"
+    warn "O cloud-init tentará configurar o acesso root durante o boot."
+    return
+  fi
+
+  info "Disco encontrado: ${DISK_PATH}"
+  info "Configurando password e acesso root via virt-customize..."
+
+  virt-customize -a "${DISK_PATH}" \
+    --root-password "password:${CLOUD_PASS}" \
+    --run-command "passwd -u root || true" \
+    --run-command "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config" \
+    --run-command "sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config" \
+    --run-command "echo 'root:${CLOUD_PASS}' | chpasswd" \
+    2>&1 | grep -v "^\[" || true
+
+  success "Acesso root configurado no disco"
 }
 
 # --- INICIAR VM --------------------------------------------------------------
@@ -184,7 +276,6 @@ start_vm() {
   step "Iniciando VM"
   qm start "${VMID}"
   success "VM ${VMID} iniciada"
-
   info "Aguardando boot (90s)..."
   sleep 90
 }
@@ -197,7 +288,8 @@ install_via_ssh() {
   if [[ "$VM_IP" == "dhcp" ]]; then
     warn "IP DHCP — aguardando QEMU agent (30s)..."
     sleep 30
-    TARGET_IP=$(qm guest exec "${VMID}" -- hostname -I 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+' | grep -v 127 | head -1 || echo "")
+    TARGET_IP=$(qm guest exec "${VMID}" -- hostname -I 2>/dev/null \
+      | grep -oP '\d+\.\d+\.\d+\.\d+' | grep -v 127 | head -1 || echo "")
   else
     TARGET_IP="${VM_IP%%/*}"
   fi
@@ -244,7 +336,7 @@ print_summary() {
   echo -e "  ${BOLD}RAM:${NC}             ${VM_MEMORY} MB"
   echo -e "  ${BOLD}CPU:${NC}             ${VM_CORES} cores"
   echo -e "  ${BOLD}Disco:${NC}           ${VM_DISK_SIZE} GB"
-  echo -e "  ${BOLD}Storage:${NC}         ${VM_STORAGE}"
+  echo -e "  ${BOLD}Storage:${NC}         ${VM_STORAGE} (VG: ${LVM_VG})"
   echo -e "  ${BOLD}Rede:${NC}            ${VM_BRIDGE}${VM_VLAN:+ VLAN ${VM_VLAN}}"
   echo -e "  ${BOLD}IP:${NC}              ${VM_IP}"
   echo -e "  ${BOLD}User VM:${NC}         ${CLOUD_USER}"
@@ -263,8 +355,10 @@ main() {
   check_proxmox_host
   validate_config
   check_vmid
+  detect_lvm_group
   download_cloud_image
   create_vm
+  fix_root_login
   start_vm
   install_via_ssh
   print_summary
