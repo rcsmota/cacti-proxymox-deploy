@@ -8,21 +8,28 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- CARREGAR CONFIGURAÇÃO CENTRAL -------------------------------------------
+# Lê cacti-deploy.conf se existir (tem prioridade sobre os defaults abaixo)
+CONF_FILE="${SCRIPT_DIR}/cacti-deploy.conf"
+[[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
+
 # --- CONFIGURAÇÃO PRINCIPAL --------------------------------------------------
-CACTI_VERSION="1.2.30"
-SPINE_VERSION="1.2.30"
-CACTI_DB_NAME="cacti"
-CACTI_DB_USER="cactiuser"
+# Valores definidos no .conf têm prioridade; caso contrário usa os defaults
+CACTI_VERSION="${CACTI_VERSION:-1.2.30}"
+SPINE_VERSION="${SPINE_VERSION:-1.2.30}"
+CACTI_DB_NAME="${CACTI_DB_NAME:-cacti}"
+CACTI_DB_USER="${CACTI_DB_USER:-cactiuser}"
 CACTI_DB_PASS="${CACTI_DB_PASS:-$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c20)}"
 CACTI_ADMIN_PASS="${CACTI_ADMIN_PASS:-admin}"
+PHP_TIMEZONE="${PHP_TIMEZONE:-Africa/Luanda}"
 CACTI_WEB_DIR="/var/www/html/cacti"
 SPINE_DIR="/usr/local/spine"
 LOG_FILE="/var/log/cacti-install.log"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUGINS_DIR="${SCRIPT_DIR}/plugins"
 CONFIG_FILE="${SCRIPT_DIR}/.cacti-install.conf"
 
-# Versões dos plugins (pode ser sobrescrito em cacti-install.conf)
+# Repositórios dos plugins
 declare -A PLUGIN_REPOS=(
   [thold]="https://github.com/Cacti/plugin_thold.git"
   [syslog]="https://github.com/Cacti/plugin_syslog.git"
@@ -38,19 +45,20 @@ declare -A PLUGIN_REPOS=(
   [flowview]="https://github.com/Cacti/plugin_flowview.git"
 )
 
+# Branches dos plugins — lidos do .conf se definidos, senão "develop"
 declare -A PLUGIN_BRANCHES=(
-  [thold]="develop"
-  [syslog]="develop"
-  [maint]="develop"
-  [monitor]="develop"
-  [hmib]="develop"
-  [webseer]="develop"
-  [gexport]="develop"
-  [intropage]="develop"
-  [audit]="develop"
-  [routerconfigs]="develop"
-  [weathermap]="develop"
-  [flowview]="develop"
+  [thold]="${PLUGIN_BRANCH_THOLD:-develop}"
+  [syslog]="${PLUGIN_BRANCH_SYSLOG:-develop}"
+  [maint]="${PLUGIN_BRANCH_MAINT:-develop}"
+  [monitor]="${PLUGIN_BRANCH_MONITOR:-develop}"
+  [hmib]="${PLUGIN_BRANCH_HMIB:-develop}"
+  [webseer]="${PLUGIN_BRANCH_WEBSEER:-develop}"
+  [gexport]="${PLUGIN_BRANCH_GEXPORT:-develop}"
+  [intropage]="${PLUGIN_BRANCH_INTROPAGE:-develop}"
+  [audit]="${PLUGIN_BRANCH_AUDIT:-develop}"
+  [routerconfigs]="${PLUGIN_BRANCH_ROUTERCONFIGS:-develop}"
+  [weathermap]="${PLUGIN_BRANCH_WEATHERMAP:-develop}"
+  [flowview]="${PLUGIN_BRANCH_FLOWVIEW:-develop}"
 )
 
 # --- CORES -------------------------------------------------------------------
@@ -144,10 +152,10 @@ install_dependencies() {
   # PHP timezone
   PHP_INI=$(php --ini | grep "Loaded Configuration" | awk '{print $NF}')
   if [[ -f "$PHP_INI" ]]; then
-    sed -i 's|;date.timezone =|date.timezone = Africa/Luanda|g' "$PHP_INI"
+    sed -i "s|;date.timezone =|date.timezone = ${PHP_TIMEZONE}|g" "$PHP_INI"
     # Também para Apache
     for ini in /etc/php/*/apache2/php.ini; do
-      [[ -f "$ini" ]] && sed -i 's|;date.timezone =|date.timezone = Africa/Luanda|g' "$ini"
+      [[ -f "$ini" ]] && sed -i "s|;date.timezone =|date.timezone = ${PHP_TIMEZONE}|g" "$ini"
     done
     success "Timezone PHP configurado"
   fi

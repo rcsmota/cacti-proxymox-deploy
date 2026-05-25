@@ -1,0 +1,51 @@
+# =============================================================================
+# cacti-deploy.conf — Configuração central do Cacti Deploy
+# Edita este ficheiro antes de rodar qualquer script.
+# =============================================================================
+
+# ── VM Proxmox ───────────────────────────────────────────────────────────────
+VMID=200
+VM_NAME="Cacti"
+VM_MEMORY=4096                  # RAM em MB
+VM_CORES=4                      # Número de cores
+VM_DISK_SIZE=100                # Disco em GB
+VM_STORAGE="local-lvm"          # Storage do Proxmox
+VM_BRIDGE="vmbr0"               # Bridge de rede
+VM_VLAN=120                     # VLAN tag (deixar vazio para sem VLAN)
+VM_IP="192.168.120.100/24"      # IP estático ou "dhcp"
+VM_GW="192.168.120.254"         # Gateway (obrigatório se IP estático)
+VM_DNS="8.8.8.8"                # DNS
+VM_SSHKEY="/root/.ssh/id_rsa.pub"  # Chave SSH pública para acesso à VM
+
+# ── Sistema operativo da VM ───────────────────────────────────────────────────
+# Imagem cloud a usar (Debian 12 por padrão)
+CLOUD_IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+CLOUD_USER="root"               # Utilizador da VM
+CLOUD_PASS="alterar-esta-senha" # Senha do utilizador da VM
+
+# ── Cacti ─────────────────────────────────────────────────────────────────────
+CACTI_VERSION="1.2.30"
+SPINE_VERSION="1.2.30"
+CACTI_DB_NAME="cacti"
+CACTI_DB_USER="cactiuser"
+CACTI_DB_PASS="alterar-esta-senha"   # Senha do utilizador do banco
+CACTI_ADMIN_PASS="alterar-esta-senha" # Senha do admin Cacti (interface web)
+
+# ── Timezone ──────────────────────────────────────────────────────────────────
+# Lista: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+PHP_TIMEZONE="Africa/Luanda"
+
+# ── Plugins ───────────────────────────────────────────────────────────────────
+# Branch git de cada plugin ("develop" usa a versão mais recente)
+PLUGIN_BRANCH_THOLD="develop"
+PLUGIN_BRANCH_SYSLOG="develop"
+PLUGIN_BRANCH_MAINT="develop"
+PLUGIN_BRANCH_MONITOR="develop"
+PLUGIN_BRANCH_HMIB="develop"
+PLUGIN_BRANCH_WEBSEER="develop"
+PLUGIN_BRANCH_GEXPORT="develop"
+PLUGIN_BRANCH_INTROPAGE="develop"
+PLUGIN_BRANCH_AUDIT="develop"
+PLUGIN_BRANCH_ROUTERCONFIGS="develop"
+PLUGIN_BRANCH_WEATHERMAP="develop"
+PLUGIN_BRANCH_FLOWVIEW="develop"
